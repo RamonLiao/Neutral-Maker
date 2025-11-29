@@ -1,47 +1,113 @@
-這個專案是一個基於 Python `asyncio` 和 `websockets` 實現的 Gate.io 期貨網格交易機器人。它設計為無 GUI 的命令行應用程式，適合在雲端伺服器 (如 VPS) 上穩定運行，透過 WebSocket 實時獲取數據並執行交易。
+### 1\. `requirements.txt`
 
-## ⚠️ 免責聲明
+這是運行機器人所需的 Python 依賴庫。
 
-**本程式碼僅供學習和研究用途。** 交易有高風險，可能導致資金損失。使用本機器人進行真實交易的**所有風險由您自行承擔**，作者對任何損失不負任何責任。在使用前，請確保您完全理解其交易邏輯和風險。
-
-## ✨ 特點
-
-* **實時數據:** 透過 Gate.io WebSocket 連接，實時獲取 Ticker、持倉、訂單和餘額更新。
-* **網格策略:** 實現基礎網格補倉 (開倉) 和止盈 (平倉) 機制。
-* **持倉鎖定/裝死模式:** 當單邊持倉超過設定閾值 (`POSITION_THRESHOLD`) 時，機器人將進入「裝死」模式，只掛單止盈，不再繼續開倉，以控制風險。
-* **雙向減倉:** 雙向持倉都超過一定閾值時，會進行部分減倉操作。
-* **CCXT 整合:** 使用 `ccxt` 庫處理 REST API 請求，確保交易的可靠性。
-
-## ⚙️ 環境與安裝
-
-### 1. 依賴項
-
-您的專案依賴於以下模組：
-
-**`requirements.txt`**
 ```text
-websockets
-ccxt
-2. 安裝請確保您安裝了 Python 3.8 或更高版本。Bash# 建議建立並啟用虛擬環境
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# .\venv\Scripts\activate # Windows
+ccxt>=4.0.0
+websockets>=11.0
+asyncio
+```
 
-# 安裝所有依賴
+-----
+
+### 2\. `README.md`
+
+這份文檔詳細說明了如何安裝、配置以及 Avellaneda 策略的參數意義。
+
+````markdown
+# Avellaneda-Stoikov Market Making Bot for Gate.io
+
+這是一個基於 **Avellaneda-Stoikov 做市商模型 (Market Making)** 的高頻交易機器人，專為 **Gate.io 合約交易 (USDT-Margined)** 設計。
+
+與傳統網格不同，此機器人會根據當前的**持倉庫存 (Inventory)** 和**市場波動率 (Volatility)** 動態調整買賣價格，目標是賺取買賣價差 (Spread) 的同時，將庫存風險降至最低。
+
+## 📂 檔案結構
+
+確保你的目錄中包含以下兩個核心檔案：
+1. **`bot.py`**: 基礎網格類別與 Gate.io API/WebSocket 連接層。
+2. **`avellaneda_bot.py`**: 包含 Avellaneda 策略邏輯的主程序 (入口)。
+
+## 🚀 快速開始
+
+### 1. 安裝環境
+確保你的電腦已安裝 Python 3.8 或更高版本。
+
+安裝依賴庫：
+```bash
 pip install -r requirements.txt
-🛠️ 配置教學所有配置參數都集中在 as.py 檔案的頂部，請替換您的 API 資訊並根據您的交易計畫修改參數：Python# ==================== 配置 (as.py 頂部) ====================
-API_KEY = "YOUR_API_KEY"         # 替換為你的 API Key
-API_SECRET = "YOUR_API_SECRET"   # 替換為你的 API Secret
-COIN_NAME = "XRP"                # 交易幣種 (例如: BTC, ETH, XRP)
-GRID_SPACING = 0.006             # 補倉間距 (0.6%)
-TAKE_PROFIT_SPACING = 0.004      # 止盈間距 (0.4%)
-INITIAL_QUANTITY = 1             # 初始交易數量 (張數)
-LEVERAGE = 20                    # 槓桿倍數 (需在 Gate.io 後台設定好)
-POSITION_THRESHOLD = 500         # 鎖倉閾值：超過此持倉量進入「裝死」模式
-POSITION_LIMIT = 100             # 持倉數量閾值：超過此限制，下次開倉數量翻倍 (用於調整 long/short_initial_quantity)
-ORDER_COOLDOWN_TIME = 60         # 鎖倉後的反向掛單冷卻時間（秒）
-SYNC_TIME = 3                    # 同步時間（秒）：每隔多久使用 REST API 重新檢查持倉/掛單
-ORDER_FIRST_TIME = 1             # 首單間隔時間：防止重複初始化開倉單
-# ==========================================================
-▶️ 運行與日誌運行指令在配置完成後，請確保虛擬環境已啟用，然後執行主程式：Bashpython as.py
-🗃️ 日誌文件機器人將運行和錯誤訊息同時寫入到控制台和日誌文件中，方便追蹤：日誌路徑: log/as.log🧠 核心邏輯詳解1. 價格計算機器人基於市場最新價格或中間價來計算掛單價格。方向類型計算公式說明多頭 (Long)止盈價Price * (1 + TAKE_PROFIT_SPACING)賣出平多多頭 (Long)補倉價Price * (1 - GRID_SPACING)買入開多空頭 (Short)止盈價Price * (1 - TAKE_PROFIT_SPACING)買入平空空頭 (Short)補倉價Price * (1 + GRID_SPACING)賣出開空2. 交易流程與風險控制🚀 正常網格交易無持倉時: 嘗試在當前中間價附近掛出初始開倉單。有持倉時: 撤銷舊單，並在計算出的 補倉價 掛上開倉/補倉單 (reduce_only: False)，在 止盈價 掛上止盈單 (reduce_only: True)。🥶 鎖倉/裝死模式當單邊持倉量超過 POSITION_THRESHOLD 時，機器人進入裝死模式：停止開倉: 不再掛出新的補倉單。單邊止盈: 只會在一個基於倉位比率調整的較遠價格掛出減倉止盈單。冷卻時間: 平倉後，該方向需等待 ORDER_COOLDOWN_TIME 後才考慮重新開倉。⚖️ 雙向減倉若多空倉位都達到 POSITION_THRESHOLD * 0.8，機器人將執行一個 POSITION_THRESHOLD * 0.1 的市價減倉操作，以釋放保證金並平衡風險。
+````
+
+### 2\. 配置 API Key
+
+打開 `avellaneda_bot.py`，找到以下部分並填入你的 Gate.io API 資訊：
+
+```python
+# avellaneda_bot.py
+
+API_KEY = "你的_API_KEY" 
+API_SECRET = "你的_API_SECRET"
+COIN_NAME = "XRP"      # 交易幣種 (例如 XRP, BTC, ETH)
+INITIAL_QUANTITY = 1   # 每次下單的合約張數
+LEVERAGE = 20          # 槓桿倍數
+```
+
+> ⚠️ **注意**：請確保 API Key 權限已開啟 **合約交易 (Futures)** 的讀寫權限。
+
+### 3\. 啟動機器人
+
+在終端機 (Terminal) 執行以下命令：
+
+```bash
+python avellaneda_bot.py
+```
+
+-----
+
+## ⚙️ 策略參數詳解 (Avellaneda Parameters)
+
+在 `avellaneda_bot.py` 中，你可以調整以下參數來改變機器人的行為風格：
+
+| 參數變數 | 建議值 | 說明 |
+| :--- | :--- | :--- |
+| **`AVE_GAMMA`** | `10.0` | **風險厭惡係數 (Risk Aversion)**。<br>數值越大，機器人越討厭持倉。當有庫存時，它會更激進地降價拋售或提價回補，以盡快回到 0 持倉。 |
+| **`AVE_SIGMA`** | `0.005` | **波動率估計 (Volatility)**。<br>數值越大，計算出的買賣價差 (Spread) 會越寬，以保護利潤；數值過小可能導致價差過窄，容易成交但利潤薄。 |
+| **`AVE_ETA`** | `100.0` | **交易成本與流動性係數**。<br>影響基礎價差的寬度。通常不需要頻繁調整。 |
+| **`AVE_T_END`** | `1` | **時間週期 (小時)**。<br>模型用於計算的時間窗口，通常設為 1 (代表以1小時為基準計算風險衰減)。 |
+
+## 📊 策略邏輯簡述
+
+機器人不再參考固定的 `Grid Spacing`，而是計算兩個關鍵數值：
+
+1.  **公允價格 (Reserve Price, $r$)**：
+
+      * 這不是市場中間價，而是你的「心理價位」。
+      * 如果你持有**多單**，$r$ 會低於市場價 (急著賣)。
+      * 如果你持有**空單**，$r$ 會高於市場價 (急著買)。
+
+2.  **最優價差 (Optimal Spread, $\delta$)**：
+
+      * 根據波動率 ($\sigma$) 和風險係數 ($\gamma$) 計算出的買賣單距離。
+
+**機器人行為：**
+
+  * 它會不斷撤銷舊訂單。
+  * 根據最新的 $r$ 和 $\delta$ 重新掛出 `Best Bid` ($r - \delta$) 和 `Best Ask` ($r + \delta$)。
+  * 目標是保持 **Delta Neutral (中性持倉)**。
+
+## ⚠️ 風險提示 (Disclaimer)
+
+  * **高頻撤單**：此策略會頻繁撤單和掛單，請留意交易所的 API Rate Limit (頻率限制)。
+  * **趨勢風險**：Avellaneda 模型適合震盪行情。在單邊暴漲或暴跌的趨勢中，做市商策略可能會面臨持續的逆勢持倉虧損。
+  * **本軟件按「現狀」提供**，不保證獲利。使用者需自行承擔交易風險。建議先在模擬盤或使用極小資金進行測試。
+
+## 📝 日誌 (Logging)
+
+運行過程中會自動生成 `log/` 文件夾，你可以在 `avellaneda_bot.log` 中查看詳細的計算數據 (R值, Delta值, 持倉量等)。
+
+```
+
+### 下一步建議
+1.  將這兩個檔案保存在與代碼相同的資料夾中。
+2.  在終端機執行 `pip install -r requirements.txt` 安裝依賴。
+3.  記得在 `avellaneda_bot.py` 中填入你的 API Key 才能開始運行。
+```
