@@ -65,7 +65,7 @@ def estimate_eta_from_fee(taker_fee_rate: float) -> float:
     Eta = K_calib / Taker_Fee_Rate (啟發式)
     """
     # K_calib: 校準常數，可根據交易對和市場深度調整。
-    K_calib = 0.05 
+    K_calib = 1 
     
     if taker_fee_rate > 0:
         estimated_eta = K_calib / taker_fee_rate
