@@ -68,7 +68,8 @@ class AvellanedaGridBot(GridTradingBot):
         try:
             term1 = 0.5 * self.gamma * (self.sigma**2) * T
             term2 = (1 / self.gamma) * math.log(1 + self.gamma / self.eta)
-            delta = term1 + term2
+            delta_pct = term1 + term2 # 這是百分比 Delta
+            delta = delta_pct * price # 轉換為絕對價格 Delta
         except (ValueError, ZeroDivisionError) as e:
             logger.error(f"Delta 計算異常: {e}. 使用備用 Delta.")
             delta = self.grid_spacing * price * 0.5 # 使用基於價格的網格備用 Delta
