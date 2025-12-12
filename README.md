@@ -1,113 +1,82 @@
-### 1\. `requirements.txt`
+# Avellaneda-Stoikov Market Making Bot (Enhanced)
 
-這是運行機器人所需的 Python 依賴庫。
+這是一個增強版的 **Avellaneda-Stoikov 做市商機器人**，專為 **Gate.io 永續合約 (Perpetual Futures)** 設計。它結合了動態參數調整、趨勢跟隨、資金費率套利以及 UCB 參數優化策略。
 
-```text
-ccxt>=4.0.0
-websockets>=11.0
-asyncio
-```
+> **最新更新**: 支援 **1-Minute High Frequency Scalping (極速超短線)** 模式，與多層網格掛單。
 
------
+---
 
-### 2\. `README.md`
+## 🌟 核心功能 (Key Features)
 
-這份文檔詳細說明了如何安裝、配置以及 Avellaneda 策略的參數意義。
+1.  **1m 極速超短線 (HF Scalping)**:
+    *   **1分鐘 K線**: 使用 1m K線數據進行更高頻的波動率計算。
+    *   **微秒級反應**: `AVG_T_END` 設為 0.02 (約 1.2 分鐘)，對庫存極度敏感。
+    *   **極致價差**: 默認 0.01% (`0.0001`) 價差，捕捉極微小的市場波動。
 
-````markdown
-# Avellaneda-Stoikov Market Making Bot for Gate.io
+2.  **多層掛單 (Multi-Layer Grid)**:
+    *   不再只掛單一買/賣單。
+    *   **5層防護**: 機器人會在最優價後方連續掛出 5 層補倉單，利用「網格效應」在價格來回震盪時吸籌與出貨。
 
-這是一個基於 **Avellaneda-Stoikov 做市商模型 (Market Making)** 的高頻交易機器人，專為 **Gate.io 合約交易 (USDT-Margined)** 設計。
+3.  **動態 Avellaneda 模型**:
+    *   自動計算市場波動率 ($\sigma$, Sigma) 和流動性參數 ($\eta$, Eta)。
+    *   根據動態市場狀況調整最佳買賣價差 (Spread)。
 
-與傳統網格不同，此機器人會根據當前的**持倉庫存 (Inventory)** 和**市場波動率 (Volatility)** 動態調整買賣價格，目標是賺取買賣價差 (Spread) 的同時，將庫存風險降至最低。
+4.  **趨勢感知 & 資金費率對沖**:
+    *   利用 EMA 判斷趨勢，利用 Funding Rate 進行套利對沖。
+
+---
 
 ## 📂 檔案結構
 
-確保你的目錄中包含以下兩個核心檔案：
-1. **`bot.py`**: 基礎網格類別與 Gate.io API/WebSocket 連接層。
-2. **`avellaneda_bot.py`**: 包含 Avellaneda 策略邏輯的主程序 (入口)。
+*   **`avellaneda_bot.py`**: **核心主程序 (建議直接運行此檔案)**。
+*   **`bot.py`**: 底層 Gate.io 接口。
+*   **`avellaneda_utils.py`**: 工具庫 (1m K線, 波動率計算)。
+*   **`strategy_manager.py`**: 高階管理器 (選幣與自動優化)。
+*   **`.env`**: API Key 配置。
 
-## 🚀 快速開始
+---
+
+## 🚀 新手入門教程 (Step-by-Step)
 
 ### 1. 安裝環境
-確保你的電腦已安裝 Python 3.8 或更高版本。
-
-安裝依賴庫：
+確保安裝了 Python 3.8+，然後安裝依賴：
 ```bash
 pip install -r requirements.txt
-````
-
-### 2\. 配置 API Key
-
-打開 `avellaneda_bot.py`，找到以下部分並填入你的 Gate.io API 資訊：
-
-```python
-# avellaneda_bot.py
-
-API_KEY = "你的_API_KEY" 
-API_SECRET = "你的_API_SECRET"
-COIN_NAME = "XRP"      # 交易幣種 (例如 XRP, BTC, ETH)
-INITIAL_QUANTITY = 1   # 每次下單的合約張數
-LEVERAGE = 20          # 槓桿倍數
 ```
 
-> ⚠️ **注意**：請確保 API Key 權限已開啟 **合約交易 (Futures)** 的讀寫權限。
+### 2. 配置測試網 API (強烈推薦)
+在專案目錄建立 `.env` 檔案：
+```env
+GATEIO_TESTNET_KEY=你的測試網API_KEY
+GATEIO_TESTNET_SECRET=你的測試網API_SECRET
+```
+*機器人檢測到這個 Key 會自動開啟測試模式。*
 
-### 3\. 啟動機器人
-
-在終端機 (Terminal) 執行以下命令：
-
+### 3. 啟動機器人 (超短線模式)
+直接運行：
 ```bash
 python avellaneda_bot.py
 ```
 
------
+**你將會看到：**
+*   `Multi-Layer Mode`: 顯示 5 層掛單，Spread 0.01%。
+*   `AVE_SIGMA`: 基於 1m K線計算的實時波動率。
+*   機器人會在當前價格上下密集掛單 (每 0.01% 一檔)，並在成交後迅速掛出止盈。
 
-## ⚙️ 策略參數詳解 (Avellaneda Parameters)
+---
 
-在 `avellaneda_bot.py` 中，你可以調整以下參數來改變機器人的行為風格：
+## ⚙️ 參數詳解 (進階調整)
 
-| 參數變數 | 建議值 | 說明 |
+在 `avellaneda_bot.py` 開頭可以調整：
+
+| 參數 | 當前設定 (HF) | 說明 |
 | :--- | :--- | :--- |
-| **`AVE_GAMMA`** | `10.0` | **風險厭惡係數 (Risk Aversion)**。<br>數值越大，機器人越討厭持倉。當有庫存時，它會更激進地降價拋售或提價回補，以盡快回到 0 持倉。 |
-| **`AVE_SIGMA`** | `0.005` | **波動率估計 (Volatility)**。<br>數值越大，計算出的買賣價差 (Spread) 會越寬，以保護利潤；數值過小可能導致價差過窄，容易成交但利潤薄。 |
-| **`AVE_ETA`** | `100.0` | **交易成本與流動性係數**。<br>影響基礎價差的寬度。通常不需要頻繁調整。 |
-| **`AVE_T_END`** | `1` | **時間週期 (小時)**。<br>模型用於計算的時間窗口，通常設為 1 (代表以1小時為基準計算風險衰減)。 |
+| **`ORDER_LAYERS`** | `5` | **掛單層數**。設定 5 表示會在買/賣方向各掛 5 張單。 |
+| **`LAYER_SPREAD`** | `0.0001` (0.01%) | **每層間距**。越小越適合手術刀式超短線，越大適合震盪大行情。 |
+| **`AVE_T_END`** | `0.02` | **時間視野**。0.02 表示機器人只在乎未來 1 分鐘的風險，會極快地平倉。 |
+| **`AVE_GAMMA`** | `0.5` | **風險厭惡**。降低到 0.5 讓機器人報價更貼近市價 (更易成交)。 |
 
-## 📊 策略邏輯簡述
+## ⚠️ 風險提示
 
-機器人不再參考固定的 `Grid Spacing`，而是計算兩個關鍵數值：
-
-1.  **公允價格 (Reserve Price, $r$)**：
-
-      * 這不是市場中間價，而是你的「心理價位」。
-      * 如果你持有**多單**，$r$ 會低於市場價 (急著賣)。
-      * 如果你持有**空單**，$r$ 會高於市場價 (急著買)。
-
-2.  **最優價差 (Optimal Spread, $\delta$)**：
-
-      * 根據波動率 ($\sigma$) 和風險係數 ($\gamma$) 計算出的買賣單距離。
-
-**機器人行為：**
-
-  * 它會不斷撤銷舊訂單。
-  * 根據最新的 $r$ 和 $\delta$ 重新掛出 `Best Bid` ($r - \delta$) 和 `Best Ask` ($r + \delta$)。
-  * 目標是保持 **Delta Neutral (中性持倉)**。
-
-## ⚠️ 風險提示 (Disclaimer)
-
-  * **高頻撤單**：此策略會頻繁撤單和掛單，請留意交易所的 API Rate Limit (頻率限制)。
-  * **趨勢風險**：Avellaneda 模型適合震盪行情。在單邊暴漲或暴跌的趨勢中，做市商策略可能會面臨持續的逆勢持倉虧損。
-  * **本軟件按「現狀」提供**，不保證獲利。使用者需自行承擔交易風險。建議先在模擬盤或使用極小資金進行測試。
-
-## 📝 日誌 (Logging)
-
-運行過程中會自動生成 `log/` 文件夾，你可以在 `avellaneda_bot.log` 中查看詳細的計算數據 (R值, Delta值, 持倉量等)。
-
-```
-
-### 下一步建議
-1.  將這兩個檔案保存在與代碼相同的資料夾中。
-2.  在終端機執行 `pip install -r requirements.txt` 安裝依賴。
-3.  記得在 `avellaneda_bot.py` 中填入你的 API Key 才能開始運行。
-```
+*   **API 頻率**: 1m 模式下交易頻率極高，請留意 Gate.io API Rate Limit。
+*   **手續費**: 極窄價差 (0.01%) 需要你的手續費率極低 (或有 Rebate)，否則可能被手續費吃光利潤。
