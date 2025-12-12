@@ -12,10 +12,11 @@ AVE_GAMMA = 0.5
 AVE_T_END = 0.02      
 Taker_Fee_Rate = 0.0005 
 
-ORDER_LAYERS = 5          
-LAYER_SPREAD = 0.0001     
-TP_SPREAD = 0.0005 
+ORDER_LAYERS = 2          
+LAYER_SPREAD = 0.0005     
+TP_SPREAD = 0.0003 
 STOP_LOSS_SPREAD = 0.01 
+MAX_ENTRY_SPREAD = 0.0002 # 0.02% Max Spread (Forced Tightness)
 
 API_KEY = os.getenv("GATEIO_TESTNET_KEY")
 API_SECRET = os.getenv("GATEIO_TESTNET_SECRET")
@@ -50,6 +51,7 @@ class AvellanedaGridBot(GridTradingBot):
         
         self.high_1m = 0.0
         self.low_1m = 0.0
+        self.rsi_val = 50.0
         
         self.order_layers = order_layers
         self.layer_spread = layer_spread
@@ -59,35 +61,62 @@ class AvellanedaGridBot(GridTradingBot):
         self.best_bid = 0           
         self.best_ask = 0           
         
-        logger.info(f"Avellaneda Dual-Mindset Bot: Layers={order_layers}, 1mRange Logic Active")
+        logger.info(f"Avellaneda Strategic Bot (FR+RSI+Trend). Layers={order_layers}, MaxSpread={MAX_ENTRY_SPREAD}")
 
     async def update_parameters_periodically(self, interval=300):
         while True:
             try:
                 await asyncio.sleep(interval)
                 loop = asyncio.get_running_loop()
-                new_sigma, new_eta, new_alpha, new_funding, new_h, new_l = await loop.run_in_executor(
+                # NOW: unpacked 7 values including RSI
+                new_sigma, new_eta, new_alpha, new_funding, new_rsi, new_h, new_l = await loop.run_in_executor(
                     None, auto_calculate_params, self.coin_name, self.taker_fee_rate
                 )
                 self.sigma = new_sigma
                 self.eta = new_eta
-                self.trend_alpha = new_alpha
+                self.trend_alpha = new_alpha 
                 self.funding_rate = new_funding
+                self.rsi_val = new_rsi
                 self.high_1m = new_h
                 self.low_1m = new_l
-                logger.info(f"Brain Update: Sigma={self.sigma:.5f}, Range(1m)=[{self.low_1m}, {self.high_1m}]")
+                
+                logger.info(f"Brain Update: Sigma={self.sigma:.4f}, RSI={self.rsi_val:.1f}, FR={self.funding_rate:.6f}, Alpha={self.trend_alpha:.4f}")
             except Exception as e:
                 logger.error(f"Brain Update Fail: {e}")
                 await asyncio.sleep(60) 
 
     def _calculate_avellaneda_prices(self, price):
-        # 1. THE BRAIN: Calculates the "Map" (Optimal Bid/Ask)
+        # 1. THE BRAIN: Calculates the "Map"
         self.inventory = self.long_position - self.short_position
-        T = self.T_end
-        funding_bias = self.funding_rate * price * 10 
-        inv_term = (self.inventory * self.gamma * (self.sigma**2) * T)
         
-        self.reserve_price = price + self.trend_alpha - inv_term - funding_bias
+        # --- STRATEGY 1: Funding Rate Bias (Hedge Logic) ---
+        # If FR is positive (Longs pay Shorts), we WANT to be Short (Target Inventory < 0)
+        # We bias the inventory term effectively
+        target_inventory_bias = 0
+        fr_factor = 200 # Amplification factor for FR
+        if self.funding_rate > 0.00005: 
+             target_inventory_bias = -1 * self.initial_quantity * 5 # Want to be Short
+        elif self.funding_rate < -0.00005:
+             target_inventory_bias = self.initial_quantity * 5 # Want to be Long
+             
+        effective_inventory = self.inventory - target_inventory_bias
+
+        T = self.T_end
+        inv_term = (effective_inventory * self.gamma * (self.sigma**2) * T)
+        
+        # --- STRATEGY 2: Leading Indicator (RSI) ---
+        # RSI > 70 => Overbought (Bias Down)
+        # RSI < 30 => Oversold (Bias Up)
+        rsi_bias = 0
+        if self.rsi_val > 70:
+             rsi_bias = -1 * (price * 0.002) # Shift down 0.2%
+        elif self.rsi_val < 30:
+             rsi_bias = (price * 0.002) # Shift up 0.2%
+             
+        # Trend Alpha Impact (5m Trend)
+        trend_impact = self.trend_alpha * 2.0 
+        
+        self.reserve_price = price + trend_impact + rsi_bias - inv_term
 
         try:
             term1 = 0.5 * self.gamma * (self.sigma**2) * T
@@ -102,104 +131,98 @@ class AvellanedaGridBot(GridTradingBot):
             else:
                  delta_price = delta_pct * price
 
+            # SAFETY CLAMP (0.02% Limit)
+            max_allowed_delta = price * MAX_ENTRY_SPREAD
+            delta_price = min(delta_price, max_allowed_delta)
+
             min_delta = price * 0.0001
             delta = max(delta_price, min_delta)
             
         except:
             delta = self.grid_spacing * price * 0.5 
             
-        self.best_bid = max(0.0, self.reserve_price - delta)
-        self.best_ask = max(0.0, self.reserve_price + delta)
+        self.best_bid = max(0.001, self.reserve_price - delta) # Ensure non-zero
+        self.best_ask = max(0.001, self.reserve_price + delta) # Ensure non-zero
         
     def update_mid_price(self, side, price):
         self._calculate_avellaneda_prices(price)
 
     async def _long_mindset_logic(self, latest_price):
-        """
-        Long Mindset:
-        - Focus: Buying Low (Entry), Selling High (TP/SL)
-        - Ignores Short side completely (except for Brain's inventory calc)
-        """
-        # 1. STOP LOSS (Defensive)
+        """Long Mindset"""
         if self.long_position > 0:
             sl_price = self.long_entry_price * (1 - self.sl_spread)
             if latest_price < sl_price:
-                logger.warning(f"[Mindset: LONG] STOP LOSS Triggered! Price {latest_price} < {sl_price}")
+                logger.warning(f"[LONG] STOP LOSS: {latest_price} < {sl_price}")
                 self.place_order('sell', latest_price*0.99, self.long_position, True, 'long')
-                return # Panic exit, stop other logic
+                return 
 
-        # 2. ENTRY (Offensive) - Place Grid Bids
         self.cancel_orders_for_side('long', for_tp=False)
         
-        # Maker Guard
+        # 1. Maker Guard (0.01% - Covers Fees)
         min_dist = latest_price * 0.0001
         safe_bid = min(self.best_bid, latest_price - min_dist)
+        
+        # 2. Tunnel Clamp (Ensure Bid is not too low)
+        min_allowed_bid = latest_price * (1 - MAX_ENTRY_SPREAD)
+        safe_bid = max(safe_bid, min_allowed_bid)
         
         base_bid = safe_bid
         for i in range(self.order_layers):
             p = base_bid * (1 - i * self.layer_spread)
+            if p <= 0: continue 
             self.place_order('buy', p, self.long_initial_quantity, False, 'long')
 
-        # 3. EXIT (Profit) - Place TP Asks
         self.cancel_orders_for_side('long', for_tp=True)
-        
         if self.long_position > 0:
-            # TP must be above Entry AND above Market (Maker)
             target_tp = self.long_entry_price * (1 + self.tp_spread)
             maker_tp = max(target_tp, latest_price * 1.0005)
             self.place_order('sell', maker_tp, self.long_position, True, 'long')
 
     async def _short_mindset_logic(self, latest_price):
-        """
-        Short Mindset:
-        - Focus: Selling High (Entry), Buying Low (TP/SL)
-        - Ignores Long side completely
-        """
-        # 1. STOP LOSS (Defensive)
+        """Short Mindset"""
         if self.short_position > 0:
             sl_price = self.short_entry_price * (1 + self.sl_spread)
             if latest_price > sl_price:
-                logger.warning(f"[Mindset: SHORT] STOP LOSS Triggered! Price {latest_price} > {sl_price}")
+                logger.warning(f"[SHORT] STOP LOSS: {latest_price} > {sl_price}")
                 self.place_order('buy', latest_price*1.01, self.short_position, True, 'short')
                 return 
 
-        # 2. ENTRY (Offensive) - Place Grid Asks
         self.cancel_orders_for_side('short', for_tp=False)
         
-        # Maker Guard
+        # 1. Maker Guard (0.01% - Covers Fees)
         min_dist = latest_price * 0.0001
         safe_ask = max(self.best_ask, latest_price + min_dist)
+        
+        # 2. Tunnel Clamp (Ensure Ask is not too high)
+        max_allowed_ask = latest_price * (1 + MAX_ENTRY_SPREAD)
+        safe_ask = min(safe_ask, max_allowed_ask)
         
         base_ask = safe_ask
         for i in range(self.order_layers):
             p = base_ask * (1 + i * self.layer_spread)
+            if p <= 0: continue
             self.place_order('sell', p, self.short_initial_quantity, False, 'short')
 
-        # 3. EXIT (Profit) - Place TP Bids
         self.cancel_orders_for_side('short', for_tp=True)
-        
         if self.short_position > 0:
-            # TP must be below Entry AND below Market (Maker)
             target_tp = self.short_entry_price * (1 - self.tp_spread)
             maker_tp = min(target_tp, latest_price * 0.9995)
             self.place_order('buy', maker_tp, self.short_position, True, 'short')
 
     async def manage_grid_orders(self, latest_price):
         try:
-            # 1. Update The Brain (Shared Strategy)
             self.update_mid_price(None, latest_price)
-
-            # 2. Activate Long Mindset
-            await self._long_mindset_logic(latest_price)
-            
-            # 3. Activate Short Mindset
-            await self._short_mindset_logic(latest_price)
-
+            # Parallel Execution
+            await asyncio.gather(
+                self._long_mindset_logic(latest_price),
+                self._short_mindset_logic(latest_price)
+            )
         except Exception as e:
             logger.error(f"Dual-Mindset Error: {e}")
 
     async def adjust_grid_strategy(self):
         if not self.latest_price: return
+        # Check Throttle again
         if time.time() - self.last_long_order_time > 2: 
             await self.manage_grid_orders(self.latest_price)
             self.last_long_order_time = time.time()
@@ -209,11 +232,11 @@ class AvellanedaGridBot(GridTradingBot):
         await super().run()
 
 async def main():
-    global AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, H1, L1
+    global AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, RSI, H1, L1
     try:
-        AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, H1, L1 = auto_calculate_params(COIN_NAME, Taker_Fee_Rate)
+        AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, RSI, H1, L1 = auto_calculate_params(COIN_NAME, Taker_Fee_Rate)
     except:
-        AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, H1, L1 = 0.01, 0.01, 0.0, 0.0, 0, 0
+        AVE_SIGMA, AVE_ETA, TREND_ALPHA, FUNDING_RATE, RSI, H1, L1 = 0.01, 0.01, 0.0, 0.0, 50.0, 0, 0
 
     bot = AvellanedaGridBot(
         API_KEY, API_SECRET, COIN_NAME,
@@ -226,6 +249,7 @@ async def main():
     )
     bot.high_1m = H1
     bot.low_1m = L1
+    bot.rsi_val = RSI
     
     await bot.run()
 

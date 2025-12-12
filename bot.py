@@ -80,7 +80,6 @@ class GridTradingBot:
         else:
              self.ws_url = WEBSOCKET_URL
         
-        # FIX: Define Symbol BEFORE Init Exchange
         self.ccxt_symbol = f"{coin_name}/USDT:USDT"
         self.ws_symbol = f"{coin_name}_USDT"
         
@@ -125,7 +124,6 @@ class GridTradingBot:
         try:
             exchange.load_markets()
             try:
-                # Need ccxt_symbol here
                 exchange.set_position_mode(True, self.ccxt_symbol)
                 logger.info("已設置為雙向持倉模式 (Hedge Mode)")
             except Exception as e:
@@ -198,7 +196,8 @@ class GridTradingBot:
                 await asyncio.sleep(5)
 
     async def connect_websocket(self):
-        async with websockets.connect(self.ws_url) as websocket:
+        # FIX: Keepalive settings
+        async with websockets.connect(self.ws_url, ping_interval=20, ping_timeout=20) as websocket:
             await self.subscribe_all(websocket)
             while True:
                 try:

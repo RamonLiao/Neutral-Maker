@@ -1,82 +1,75 @@
-# Avellaneda-Stoikov Market Making Bot (Enhanced)
+# Avellaneda-Stoikov Strategic Hedge Bot (AS-Hedge)
 
-這是一個增強版的 **Avellaneda-Stoikov 做市商機器人**，專為 **Gate.io 永續合約 (Perpetual Futures)** 設計。它結合了動態參數調整、趨勢跟隨、資金費率套利以及 UCB 參數優化策略。
+這是一個高度進階的 **Avellaneda-Stoikov 對沖做市機器人**，專為 **Gate.io 永續合約** 設計。
+它採用獨特的「**雙重思維 (Dual Mindset)**」架構，在單一幣種上同時運行多空策略，利用資金費率 (Funding Rate) 套利與 RSI 趨勢預測來實現市場中性收益。
 
-> **最新更新**: 支援 **1-Minute High Frequency Scalping (極速超短線)** 模式，與多層網格掛單。
+> **核心哲學**: 讓利潤奔跑的 Short 倉位為暫時虧損的 Long 倉位提供對沖，並賺取 Funding Fee。
 
 ---
 
-## 🌟 核心功能 (Key Features)
+## 🌟 核心策略架構 (Technical Architecture)
 
-1.  **1m 極速超短線 (HF Scalping)**:
-    *   **1分鐘 K線**: 使用 1m K線數據進行更高頻的波動率計算。
-    *   **微秒級反應**: `AVG_T_END` 設為 0.02 (約 1.2 分鐘)，對庫存極度敏感。
-    *   **極致價差**: 默認 0.01% (`0.0001`) 價差，捕捉極微小的市場波動。
+### 1. 雙重思維引擎 (Dual Mindset Engine)
+*   **平行執行**: 利用 `asyncio.gather` 讓「做多大腦」與「做空大腦」在毫秒級同步運算，互不干擾。
+*   **獨立風控**: 多空雙方各自擁有獨立的止盈 (TP) 與止損 (SL) 邏輯。
 
-2.  **多層掛單 (Multi-Layer Grid)**:
-    *   不再只掛單一買/賣單。
-    *   **5層防護**: 機器人會在最優價後方連續掛出 5 層補倉單，利用「網格效應」在價格來回震盪時吸籌與出貨。
+### 2. 智能對沖 (Smart Hedging & FR Farming)
+*   **資金費率偏向 (FR Bias)**: 機器人實時監控 Gate.io 預測資金費率。
+    *   若 FR > 0 (做多付費): 機器人自動偏向 **持有空單** (Target Inventory = Short)，以賺取資金費。
+    *   若 FR < 0 (做空付費): 機器人自動偏向 **持有多單**。
+*   **庫存偏離 (Inventory Skew)**: 利用 Avellaneda 公式，根據 FR 方向自動調整報價中樞，誘使市場成交有利方向。
 
-3.  **動態 Avellaneda 模型**:
-    *   自動計算市場波動率 ($\sigma$, Sigma) 和流動性參數 ($\eta$, Eta)。
-    *   根據動態市場狀況調整最佳買賣價差 (Spread)。
+### 3. 領先指標預測 (Leading Indicators)
+*   **RSI 趨勢預測**:
+    *   **超買 (>70)**: 預判回調，網格整體下移 (偏空報價)。
+    *   **超賣 (<30)**: 預判反彈，網格整體上移 (偏多報價)。
+*   **5m 趨勢跟隨**: 疊加 5分鐘價格斜率 (Alpha)，順勢而為。
 
-4.  **趨勢感知 & 資金費率對沖**:
-    *   利用 EMA 判斷趨勢，利用 Funding Rate 進行套利對沖。
+### 4. 隧道鉗制網格 (Tunnel Clamp Grid)
+針對高頻刷單 (Scalping) 優化的特殊網格結構：
+*   **緊湊頭部 (Tight Head)**: 首單強制鉗制在 **0.02%** 價差內 (`MAX_ENTRY_SPREAD`)，確保極高成交率。
+*   **寬尾部 (Wide Tail)**: 後續網格間距 **0.05%** (`LAYER_SPREAD`)，以 2 層結構覆蓋 5m K線波動範圍。
+*   **Maker Guard**: 0.01% 安全距離，確保始終掛單 (Maker) 賺取返佣或降低費率。
 
 ---
 
 ## 📂 檔案結構
 
-*   **`avellaneda_bot.py`**: **核心主程序 (建議直接運行此檔案)**。
-*   **`bot.py`**: 底層 Gate.io 接口。
-*   **`avellaneda_utils.py`**: 工具庫 (1m K線, 波動率計算)。
-*   **`strategy_manager.py`**: 高階管理器 (選幣與自動優化)。
-*   **`.env`**: API Key 配置。
+*   **`avellaneda_bot.py`**: **[入口]** 策略主程序。包含雙重思維、網格邏輯與下單執行。
+*   **`avellaneda_utils.py`**: **[大腦]** 運算單元。負責計算 RSI、獲取 Real FR、波動率 (Sigma) 與趨勢 (Alpha)。
+*   **`bot.py`**: **[驅動]** 底層接口。處理 Gate.io WebSocket 連線、Hedge Mode 設定與帳戶同步。
+*   **`.env`**: API Key 配置 (支援 Testnet/Mainnet 自動切換)。
 
 ---
 
-## 🚀 新手入門教程 (Step-by-Step)
+## 🚀 快速開始
 
-### 1. 安裝環境
-確保安裝了 Python 3.8+，然後安裝依賴：
+### 1. 安裝依賴
 ```bash
-pip install -r requirements.txt
+pip install ccxt websockets python-dotenv numpy pandas
 ```
 
-### 2. 配置測試網 API (強烈推薦)
-在專案目錄建立 `.env` 檔案：
+### 2. 配置 API
+建立 `.env` 檔案：
 ```env
-GATEIO_TESTNET_KEY=你的測試網API_KEY
-GATEIO_TESTNET_SECRET=你的測試網API_SECRET
-```
-*機器人檢測到這個 Key 會自動開啟測試模式。*
+# 測試網 (優先使用)
+GATEIO_TESTNET_KEY=你的Key
+GATEIO_TESTNET_SECRET=你的Secret
 
-### 3. 啟動機器人 (超短線模式)
-直接運行：
+# 主網 (若無測試網Key則使用)
+API_KEY=你的主網Key
+API_SECRET=你的主網Secret
+```
+
+### 3. 啟動策略
 ```bash
 python avellaneda_bot.py
 ```
 
-**你將會看到：**
-*   `Multi-Layer Mode`: 顯示 5 層掛單，Spread 0.01%。
-*   `AVE_SIGMA`: 基於 1m K線計算的實時波動率。
-*   機器人會在當前價格上下密集掛單 (每 0.01% 一檔)，並在成交後迅速掛出止盈。
-
 ---
 
-## ⚙️ 參數詳解 (進階調整)
+## ⚠️ 風險提示 (Risk Warning)
 
-在 `avellaneda_bot.py` 開頭可以調整：
-
-| 參數 | 當前設定 (HF) | 說明 |
-| :--- | :--- | :--- |
-| **`ORDER_LAYERS`** | `5` | **掛單層數**。設定 5 表示會在買/賣方向各掛 5 張單。 |
-| **`LAYER_SPREAD`** | `0.0001` (0.01%) | **每層間距**。越小越適合手術刀式超短線，越大適合震盪大行情。 |
-| **`AVE_T_END`** | `0.02` | **時間視野**。0.02 表示機器人只在乎未來 1 分鐘的風險，會極快地平倉。 |
-| **`AVE_GAMMA`** | `0.5` | **風險厭惡**。降低到 0.5 讓機器人報價更貼近市價 (更易成交)。 |
-
-## ⚠️ 風險提示
-
-*   **API 頻率**: 1m 模式下交易頻率極高，請留意 Gate.io API Rate Limit。
-*   **手續費**: 極窄價差 (0.01%) 需要你的手續費率極低 (或有 Rebate)，否則可能被手續費吃光利潤。
+1.  **槓桿風險**: 預設 20x 槓桿。雖有對沖機制，但在極端單邊行情下仍需注意爆倉風險。
+2.  **API 限制**: 高頻模式下請求量大，請留意 Gate.io Rate Limit。
+3.  **單幣對沖**: 本策略在同一幣種上對沖，若幣價發生 50% 以上瞬間崩盤，雙向持倉可能同時面臨巨大波動。
