@@ -1,0 +1,30 @@
+graph TD
+    %% Input Sources
+    Market[📡 Market Data] -->|Price S| Bot
+    Utils[🧠 Analysis Engine] -->|Volatility σ / RSI| Bot
+    FR[💸 Funding Rate] -->|Bias Signal| Bot
+    UCB[🤖 UCB Manager] -->|Gamma γ| Bot
+
+    %% Core Logic
+    subgraph "Dual Mindset Engine (Avellaneda Strategy)"
+        Bot -->|Params| Logic{Pricing Logic}
+        
+        Logic -->|Input| P1["Inventory (q)"]
+        Logic -->|Input| P2["Risk Aversion (γ)"]
+        Logic -->|Input| P3["Volatility (σ)"]
+        
+        subgraph "Avellaneda Formula"
+            P1 & P2 & P3 --> Calc1["Reserve Price (r) = S - qγσ²(T-t)"]
+            P2 & P3 --> Calc2["Spread (δ) = ½γσ²T + (1/γ)ln(...)"]
+        end
+
+        Calc1 & Calc2 --> Bid["Bid = r - δ"]
+        Calc1 & Calc2 --> Ask["Ask = r + δ"]
+
+        Bid -->|Tunnel Clamp 0.02%| SafeBid[Final Bid]
+        Ask -->|Tunnel Clamp 0.02%| SafeAsk[Final Ask]
+    end
+
+    %% Execution
+    SafeBid -->|Limit Order| Exchange[🏛️ Gate.io]
+    SafeAsk -->|Limit Order| Exchange

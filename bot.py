@@ -9,7 +9,7 @@ import logging
 import hmac
 import hashlib
 import time
-import ccxt
+import ccxt.async_support as ccxt
 import math
 import os
 import datetime
@@ -83,8 +83,9 @@ class GridTradingBot:
         self.ccxt_symbol = f"{coin_name}/USDT:USDT"
         self.ws_symbol = f"{coin_name}_USDT"
         
-        self.exchange = self._initialize_exchange()
-        self.price_precision = self._get_price_precision()
+        # Async exchange init (must happen in run/await)
+        self.exchange = self._create_exchange_instance()
+        self.price_precision = 2 
 
         self.long_initial_quantity = initial_quantity
         self.short_initial_quantity = initial_quantity
@@ -112,7 +113,7 @@ class GridTradingBot:
         self.total_fees_paid = 0.0
         self.last_strategy_run_time = 0.0
 
-    def _initialize_exchange(self):
+    def _create_exchange_instance(self):
         exchange = CustomGate({
             "apiKey": self.api_key,
             "secret": self.api_secret,
@@ -120,27 +121,35 @@ class GridTradingBot:
         })
         if self.testnet:
             exchange.set_sandbox_mode(True)
-        
-        try:
-            exchange.load_markets()
-            try:
-                exchange.set_position_mode(True, self.ccxt_symbol)
-                logger.info("已設置為雙向持倉模式 (Hedge Mode)")
-            except Exception as e:
-                logger.warning(f"設置 Hedge Mode 失敗: {e}")
-        except Exception as e:
-            logger.error(f"初始化 Exchange 失敗: {e}")
-
         return exchange
 
-    def _get_price_precision(self):
-        markets = self.exchange.fetch_markets()
-        symbol_info = next(market for market in markets if market["symbol"] == self.ccxt_symbol)
-        return int(-math.log10(float(symbol_info["precision"]["price"])))
+    async def _initialize_exchange_conn(self):
+        try:
+            await self.exchange.load_markets()
+            try:
+                await self.exchange.set_position_mode(True, self.ccxt_symbol)
+                logger.info("已設置為雙向持倉模式 (Hedge Mode)")
+            except Exception as e:
+                # "NO_CHANGE" is fine
+                if "NO_CHANGE" not in str(e):
+                    logger.warning(f"設置 Hedge Mode 失敗: {e}")
+            
+            # Fetch precision
+            markets = await self.exchange.fetch_markets()
+            symbol_info = next(market for market in markets if market["symbol"] == self.ccxt_symbol)
+            self.price_precision = int(-math.log10(float(symbol_info["precision"]["price"])))
 
-    def get_position(self):
+        except Exception as e:
+            logger.error(f"初始化 Exchange 連線失敗: {e}")
+
+    async def get_position(self):
         params = {'settle': 'usdt', 'type': 'swap'}
-        positions = self.exchange.fetch_positions(params=params)
+        try:
+            positions = await self.exchange.fetch_positions(params=params)
+        except Exception as e:
+            logger.error(f"Fetch Position Error: {e}")
+            return self.long_position, self.long_entry_price, self.short_position, self.short_entry_price
+
         long_position = 0
         short_position = 0
         long_entry = 0.0
@@ -160,8 +169,13 @@ class GridTradingBot:
 
         return long_position, long_entry, short_position, short_entry
 
-    def check_orders_status(self):
-        orders = self.exchange.fetch_open_orders(self.ccxt_symbol)
+    async def check_orders_status(self):
+        try:
+            orders = await self.exchange.fetch_open_orders(self.ccxt_symbol)
+        except Exception as e:
+            logger.error(f"Fetch Orders Error: {e}")
+            return 0, 0, 0, 0
+
         buy_long_orders_count = 0
         sell_long_orders_count = 0
         sell_short_orders_count = 0
@@ -181,10 +195,12 @@ class GridTradingBot:
         return buy_long_orders_count, sell_long_orders_count, sell_short_orders_count, buy_short_orders_count
 
     async def run(self):
-        self.long_position, self.long_entry_price, self.short_position, self.short_entry_price = self.get_position()
+        await self._initialize_exchange_conn()
+        await self._update_initial_balance() # Fetch Initial Balance via REST
+        self.long_position, self.long_entry_price, self.short_position, self.short_entry_price = await self.get_position()
         logger.info(f"Init Positions: Long {self.long_position} (@{self.long_entry_price}), Short {self.short_position} (@{self.short_entry_price})")
 
-        self.buy_long_orders, self.sell_long_orders, self.sell_short_orders, self.buy_short_orders = self.check_orders_status()
+        self.buy_long_orders, self.sell_long_orders, self.sell_short_orders, self.buy_short_orders = await self.check_orders_status()
         
         asyncio.create_task(self.reporting_loop())
 
@@ -220,6 +236,8 @@ class GridTradingBot:
                 except Exception as e:
                     logger.error(f"WS Msg Error: {e}")
                     break
+        try: await self.exchange.close()
+        except: pass
 
     def _generate_sign(self, message):
         return hmac.new(self.api_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha512).hexdigest()
@@ -238,6 +256,17 @@ class GridTradingBot:
             "auth": {"method": "api_key", "KEY": self.api_key, "SIGN": sign},
         }
         await websocket.send(json.dumps(payload))
+
+    async def _update_initial_balance(self):
+        try:
+            # REST Fetch for initial snapshot
+            balances = await self.exchange.fetch_balance({'type': 'swap'})
+            self.balance["USDT"] = {"balance": float(balances.get("USDT", {}).get("total", 0)), "change": 0}
+            if self.start_balance_usdt is None:
+                self.start_balance_usdt = self.balance["USDT"]["balance"]
+            logger.info(f"Initial Balance Loaded: {self.start_balance_usdt:.2f} USDT")
+        except Exception as e:
+            logger.error(f"Failed to fetch initial balance: {e}")
 
     async def handle_balance_update(self, message):
         data = json.loads(message)
@@ -261,11 +290,11 @@ class GridTradingBot:
             self.last_strategy_run_time = time.time()
 
             if time.time() - self.last_position_update_time > SYNC_TIME:
-                self.long_position, self.long_entry_price, self.short_position, self.short_entry_price = self.get_position()
+                self.long_position, self.long_entry_price, self.short_position, self.short_entry_price = await self.get_position()
                 self.last_position_update_time = time.time()
 
             if time.time() - self.last_orders_update_time > SYNC_TIME:
-                self.buy_long_orders, self.sell_long_orders, self.sell_short_orders, self.buy_short_orders = self.check_orders_status()
+                self.buy_long_orders, self.sell_long_orders, self.sell_short_orders, self.buy_short_orders = await self.check_orders_status()
                 self.last_orders_update_time = time.time()
 
             await self.adjust_grid_strategy()
@@ -307,9 +336,24 @@ class GridTradingBot:
         data = json.loads(message)
         if data.get("event") == "update":
             for t in data["result"]:
-                self.trade_history.append(t)
-                self.total_fees_paid += float(t.get("fee", 0))
-                logger.info(f"Fill: {t['size']} @ {t['price']}")
+                # Normalize Gate.io data (size -> side/amount)
+                # Gate: size > 0 (Buy), size < 0 (Sell)
+                raw_size = float(t.get('size', 0))
+                side = 'buy' if raw_size > 0 else 'sell'
+                amount = abs(raw_size)
+                price = float(t.get('price', 0))
+                
+                normalized_trade = {
+                    'side': side,
+                    'amount': amount,
+                    'price': price,
+                    'fee': float(t.get('fee', 0)),
+                    'timestamp': t.get('create_time_ms', time.time()*1000)
+                }
+                
+                self.trade_history.append(normalized_trade)
+                self.total_fees_paid += normalized_trade['fee']
+                logger.info(f"Fill: {side} {amount} @ {price}")
 
     async def reporting_loop(self):
         while True:
@@ -318,43 +362,100 @@ class GridTradingBot:
             except Exception as e: logger.error(f"Report Error: {e}")
 
     def _generate_report(self):
-        dur = str(datetime.timedelta(seconds=int(time.time() - self.start_time)))
-        trades = len(self.trade_history)
-        cur_usdt = self.balance.get("USDT", {}).get("balance", 0)
-        start = self.start_balance_usdt or cur_usdt
-        pnl = cur_usdt - start
+        # 1. Basic Time Stats
+        now = time.time()
+        start = self.start_time
+        duration = str(datetime.timedelta(seconds=int(now - start)))
+        start_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start))
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
         
-        logger.info("\n" + "="*40)
-        logger.info(f"REPORT | Duration: {dur} | Trades: {trades}")
-        logger.info(f"USDT: {start:.2f} -> {cur_usdt:.2f} (PnL: {pnl:+.2f})")
-        logger.info("="*40 + "\n")
+        # 2. Trade Statistics
+        trades = self.trade_history
+        # Simple safeguard if empty
+        if not trades:
+            buys, sells = [], []
+        else:
+            buys = [t for t in trades if t.get('side') == 'buy']
+            sells = [t for t in trades if t.get('side') == 'sell']
+        
+        buy_vol_base = sum([float(t['amount']) for t in buys])
+        sell_vol_base = sum([float(t['amount']) for t in sells]) * -1
+        
+        # Approximate USDT volume (price * amount)
+        buy_vol_quote = sum([float(t['amount'])*float(t['price']) for t in buys]) * -1
+        sell_vol_quote = sum([float(t['amount'])*float(t['price']) for t in sells])
+        
+        avg_buy_price = (abs(buy_vol_quote) / buy_vol_base) if buy_vol_base > 0 else 0
+        avg_sell_price = (sell_vol_quote / abs(sell_vol_base)) if sell_vol_base else 0
+        
+        total_vol_quote = buy_vol_quote + sell_vol_quote
 
-    def cancel_orders_for_side(self, position_side, for_tp=False):
-        orders = self.exchange.fetch_open_orders(self.ccxt_symbol)
-        for order in orders:
-            is_reduce = order['reduceOnly']
-            side = order['side']
-            if position_side == 'long':
-                if for_tp:
-                    if is_reduce and side == 'sell': self.cancel_order(order['id'])
-                else:
-                    if not is_reduce and side == 'buy': self.cancel_order(order['id'])
-            elif position_side == 'short':
-                if for_tp:
-                    if is_reduce and side == 'buy': self.cancel_order(order['id'])
-                else:
-                    if not is_reduce and side == 'sell': self.cancel_order(order['id'])
+        # 3. Asset & PnL
+        cur_usdt = self.balance.get("USDT", {}).get("balance", 0)
+        start_usdt = self.start_balance_usdt if self.start_balance_usdt is not None else cur_usdt
+        
+        # Simplified PnL
+        total_pnl = cur_usdt - start_usdt
+        return_pct = (total_pnl / start_usdt * 100) if start_usdt > 0 else 0.0
 
-    def cancel_order(self, order_id):
-        try: self.exchange.cancel_order(order_id, self.ccxt_symbol)
+        # Output Formatting (Hummingbot Style)
+        lines = []
+        lines.append("\n" + "="*50)
+        lines.append(f"Start Time: {start_str}")
+        lines.append(f"Current Time: {now_str}")
+        lines.append(f"Duration: {duration}")
+        lines.append(f"\nExchange: gate_io / {self.coin_name}-USDT")
+        
+        lines.append("\n  Trades:")
+        lines.append(f"    {'':<20} {'buy':>10} {'sell':>10} {'total':>10}")
+        lines.append(f"    {'Number of trades':<20} {len(buys):>10} {len(sells):>10} {len(trades):>10}")
+        lines.append(f"    {'Total vol (COIN)':<20} {buy_vol_base:>10.4f} {sell_vol_base:>10.4f} {buy_vol_base+sell_vol_base:>10.4f}")
+        lines.append(f"    {'Total vol (USDT)':<20} {buy_vol_quote:>10.2f} {sell_vol_quote:>10.2f} {total_vol_quote:>10.2f}")
+        lines.append(f"    {'Avg price':<20} {avg_buy_price:>10.4f} {avg_sell_price:>10.4f} {'-':>10}")
+
+        lines.append("\n  Assets:")
+        lines.append(f"    {'':<15} {'start':>10} {'current':>10} {'change':>10}")
+        lines.append(f"    {'USDT':<15} {start_usdt:>10.2f} {cur_usdt:>10.2f} {total_pnl:>10.2f}")
+
+        lines.append("\n  Performance:")
+        lines.append(f"    {'Current portfolio value':<25} {cur_usdt:>10.2f} USDT")
+        lines.append(f"    {'Fees paid':<25} {self.total_fees_paid:>10.4f} USDT")
+        lines.append(f"    {'Total PnL':<25} {total_pnl:>10.4f} USDT")
+        lines.append(f"    {'Return %':<25} {return_pct:>10.2f} %")
+        lines.append("="*50 + "\n")
+
+        # Log block
+        logger.info("\n".join(lines))
+
+    async def cancel_orders_for_side(self, position_side, for_tp=False):
+        try:
+            orders = await self.exchange.fetch_open_orders(self.ccxt_symbol)
+            for order in orders:
+                is_reduce = order['reduceOnly']
+                side = order['side']
+                if position_side == 'long':
+                    if for_tp:
+                        if is_reduce and side == 'sell': await self.cancel_order(order['id'])
+                    else:
+                        if not is_reduce and side == 'buy': await self.cancel_order(order['id'])
+                elif position_side == 'short':
+                    if for_tp:
+                        if is_reduce and side == 'buy': await self.cancel_order(order['id'])
+                    else:
+                        if not is_reduce and side == 'sell': await self.cancel_order(order['id'])
+        except Exception as e:
+            logger.error(f"Cancel Side Error: {e}")
+
+    async def cancel_order(self, order_id):
+        try: await self.exchange.cancel_order(order_id, self.ccxt_symbol)
         except: pass
 
-    def place_order(self, side, price, quantity, is_reduce_only=False, position_side=None):
+    async def place_order(self, side, price, quantity, is_reduce_only=False, position_side=None):
         try:
             params = {'reduce_only': is_reduce_only}
             if position_side:
                 params['positionSide'] = position_side.lower()
-            self.exchange.create_order(self.ccxt_symbol, 'limit', side, quantity, price, params)
+            await self.exchange.create_order(self.ccxt_symbol, 'limit', side, quantity, price, params)
         except ccxt.BaseError as e:
             logger.error(f"Order Error ({side} @ {price}): {e}")
 
