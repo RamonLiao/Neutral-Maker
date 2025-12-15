@@ -14,11 +14,11 @@ AVE_GAMMA = 0.5
 AVE_T_END = 0.02      
 Taker_Fee_Rate = 0.0005 
 
-ORDER_LAYERS = 2          
-LAYER_SPREAD = 0.0003     
-TP_SPREAD = 0.0004 
-STOP_LOSS_SPREAD = 0.002  # Tightened to 0.2%
-MAX_ENTRY_SPREAD = 0.0002 # 0.02% Max Spread (Forced Tightness)
+ORDER_LAYERS = 1          # Single Layer (Strict 4-Order Limit)
+LAYER_SPREAD = 0.0005     # 0.05% (Outer Entry)
+TP_SPREAD = 0.0002        # 0.02% (Inner TP - Priority Close)
+STOP_LOSS_SPREAD = 0.002  # 0.2% (Dynamic Baseline)
+MAX_ENTRY_SPREAD = 0.0005 # 0.05% Max
 
 API_KEY = os.getenv("GATEIO_TESTNET_KEY")
 API_SECRET = os.getenv("GATEIO_TESTNET_SECRET")
@@ -61,7 +61,7 @@ class AvellanedaGridBot(GridTradingBot):
         
         self.order_layers = order_layers
         self.layer_spread = layer_spread
-        self.tp_spread = TP_SPREAD
+        self.tp_spread = TP_SPREAD # Is 0.0002 (Inner)
         self.sl_spread = STOP_LOSS_SPREAD
         self.dynamic_refresh_time = 10 # Default 10s Baseline
         self.inventory = 0          

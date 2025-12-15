@@ -33,16 +33,33 @@
 
 ---
 
-## ⚙️ 當前配置: 極速超短線 (HF Scalping)
+## ⚙️ 當前配置: 內縮止盈與動態防禦 (Inner-TP & Dynamic Defense)
 
-為了捕捉微小利潤並實現高頻換手，目前參數設定為：
+為了最大化庫存周轉並消除風險，我們實施了 **"Holy Grail" 架構**:
 
-*   **Gamma (風險厭惡)**: `0.8` (極高，對庫存零容忍)
-*   **TP Spread (止盈)**: `0.04%` (4 ticks，極速獲利)
-*   **Layer Spread (網格)**: `0.03%` (加密掛單密度)
-*   **Tunnel (鉗制)**: `0.02%` (首單貼死盤口)
+### 1. 內縮止盈 (Inner-TP / Outer-Entry)
+*   **Inner Zone (優先平倉)**: `TP Spread = 0.02%`。
+    *   止盈單 (Close) 永遠比 開倉單 (Open) 更貼近盤口。
+    *   效果：市場微小波動即可觸發平倉，庫存極速歸零。
+*   **Outer Zone (謹慎開倉)**: `Layer Spread = 0.05%`。
+    *   只有在波動擴大時才建立新倉位，避免在無效震盪中累積庫存。
 
-這種配置下，機器人會瘋狂進行「**微利套利 (Scalping)**」，而非波段持有。
+### 2. 精簡架構 (Minimalist Stack)
+*   **Layers**: `1` (單層)。
+*   **Max Orders**: 嚴格限制 **4 張掛單** (Open Short / Close Long / Close Short / Open Long)。
+*   **Zero-Balance**: 平倉單嚴格執行 `Reduce-Only`，確保 **持倉 + 掛單 = 0**，絕不留尾巴。
+
+### 3. 動態參數 (Dynamic Parameters)
+*   **動態止損 (Adaptive Stop Loss)**:
+    *   公式: `SL = Sigma * 0.5`
+    *   範圍: **0.2%** (平靜時快跑) <-> **1.0%** (劇烈時防洗盤)。
+*   **動態刷新 (Adaptive Refresh)**:
+    *   頻率: **10s** (高波) <-> **30s** (低波)。
+    *   目的: 在 API 限頻與反應速度間取得完美平衡。
+
+### 4. 穩定性增強
+*   **Anti-Sleep**: 內建時間同步 (`Time Sync`) 與超時保護 (`Timeout`)，防止因系統休眠導致的 `REQUEST_EXPIRED` 錯誤。
+*   **Async Core**: 全異步 ccxt 架構，拒絕阻塞。
 
 ---
 

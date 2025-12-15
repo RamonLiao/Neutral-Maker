@@ -114,10 +114,14 @@ class GridTradingBot:
         self.last_strategy_run_time = 0.0
 
     def _create_exchange_instance(self):
-        exchange = CustomGate({
             "apiKey": self.api_key,
             "secret": self.api_secret,
-            "options": {"defaultType": "future"},
+            "options": {
+                "defaultType": "future",
+                "adjustForTimeDifference": True, # Auto-sync server time
+            },
+            "timeout": 30000, # 30s request timeout
+            "enableRateLimit": True,
         })
         if self.testnet:
             exchange.set_sandbox_mode(True)

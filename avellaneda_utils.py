@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 def get_gateio_kline(coin_name, interval="1h", limit=100):
-    exchange = ccxt.gate({'enableRateLimit': True})
+    exchange = ccxt.gate({'enableRateLimit': True, 'timeout': 5000}) # 5s timeout
     symbol = f"{coin_name}/USDT"
     
     for attempt in range(3):
@@ -19,7 +19,7 @@ def get_gateio_kline(coin_name, interval="1h", limit=100):
     return None
 
 def get_funding_rate(coin_name):
-    exchange = ccxt.gate({'enableRateLimit': True})
+    exchange = ccxt.gate({'enableRateLimit': True, 'timeout': 5000}) # 5s timeout
     symbol = f"{coin_name}/USDT"
     try:
         # Gate.io futures funding rate
