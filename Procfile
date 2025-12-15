@@ -1,1 +1,1 @@
-worker: python -u avellaneda_bot.py
+worker: python -u app/main.py
