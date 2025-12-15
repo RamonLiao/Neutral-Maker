@@ -1,3 +1,5 @@
 ccxt
 websockets
-asyncio
+pandas
+numpy
+python-dotenv
