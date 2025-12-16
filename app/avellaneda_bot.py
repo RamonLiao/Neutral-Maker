@@ -3,10 +3,10 @@ import time
 import math
 import logging
 import os
-from bot import GridTradingBot, logger 
-from avellaneda_utils import auto_calculate_params
+from .bot import GridTradingBot, logger 
+from .avellaneda_utils import auto_calculate_params
 from dotenv import load_dotenv
-from ucb_manager import UCBManager
+from .ucb_manager import UCBManager
 
 load_dotenv()
 
